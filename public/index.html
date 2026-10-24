@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Post Writer</title>
+<style>
+:root{--bg:#e9edf2;--panel:#fff;--ink:#1a2230;--mute:#5d6878;--line:#d5dce6;--accent:#8e2f6a;--on:#fff;--warn:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#12161c;--panel:#1b212b;--ink:#e8ecf2;--mute:#9aa6b6;--line:#2c3542;--accent:#d683b4;--on:#1a1220;--warn:#ff8a7a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:760px;margin:0 auto;padding:28px 16px 80px}
+h1{font:600 30px/1.2 Georgia,"Iowan Old Style",serif;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 20px}
+.row{display:flex;gap:8px}
+input[type=url],input[type=password]{flex:1;min-width:0;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font:inherit}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 12px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on);font-weight:600;padding:12px 18px}
+button:disabled{opacity:.6;cursor:wait}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#pwbox{margin-top:8px}
+#err{color:var(--warn);margin:12px 0 0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-top:20px;overflow:hidden}
+.sec{padding:16px;border-top:1px solid var(--line)}
+.sec:first-child{border-top:0}
+.head{display:flex;gap:14px;align-items:flex-start}
+.head img{width:132px;height:88px;object-fit:cover;border-radius:8px;background:var(--line);flex:none}
+.head h2{font:600 18px/1.3 Georgia,serif;margin:0 0 4px}
+.head p{margin:0;color:var(--mute);font-size:14px}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;padding:12px 16px 0}
+.tabs button{border-radius:999px}
+.tabs button[aria-selected=true]{background:var(--accent);color:var(--on);border-color:var(--accent)}
+.sec h3{margin:0 0 8px;font-size:16px;display:flex;justify-content:space-between;gap:8px}
+.cnt{font-weight:400;color:var(--mute);font-size:13px}
+.cnt.over{color:var(--warn)}
+textarea{width:100%;min-height:120px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;resize:vertical}
+textarea.tags{min-height:52px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.on{opacity:1}
+@media (max-width:520px){.head{flex-direction:column}.head img{width:100%;height:160px}.row{flex-direction:column}}
+@media (prefers-reduced-motion:reduce){#toast{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Post Writer</h1>
+  <p class="sub">Paste a blog link. It reads the whole article and writes posts for X, Facebook and Instagram, each built on a different idea from it.</p>
+  <div class="row">
+    <input id="url" type="url" placeholder="https://www.yourblog.com/your-post/" aria-label="Blog post link">
+    <button id="go" class="primary">Write posts</button>
+  </div>
+  <div id="pwbox" hidden><input id="pw" type="password" placeholder="Password" aria-label="Password"></div>
+  <p id="err" role="alert" hidden></p>
+  <div id="out"></div>
+</main>
+<div id="toast" role="status"></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let data = null, cur = 0, imgBlob = null;
+
+const headers = () => ({ 'content-type': 'application/json', 'x-app-password': $('#pw').value || localStorage.getItem('pw') || '' });
+const toast = (m) => { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('on'), 1600); };
+const showErr = (m) => { const e = $('#err'); e.textContent = m || ''; e.hidden = !m; };
+
+async function copy(text, label) {
+  try { await navigator.clipboard.writeText(text); toast(label + ' copied'); }
+  catch { toast('Couldn’t copy. Select the text and copy it by hand.'); }
+}
+
+async function run() {
+  const url = $('#url').value.trim();
+  if (!url) return;
+  const b = $('#go'); b.disabled = true; b.textContent = 'Reading the article…'; showErr('');
+  try {
+    const r = await fetch('/api/generate', { method: 'POST', headers: headers(), body: JSON.stringify({ url }) });
+    if (r.status === 401) { $('#pwbox').hidden = false; $('#pw').focus(); throw new Error('Enter the password and try again.'); }
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Something went wrong.');
+    if ($('#pw').value) localStorage.setItem('pw', $('#pw').value);
+    data = d; cur = 0; imgBlob = null; render(); loadImage(d.image);
+  } catch (e) { showErr(e.message); }
+  finally { b.disabled = false; b.textContent = 'Write posts'; }
+}
+
+async function loadImage(src) {
+  if (!src) return;
+  try {
+    const r = await fetch('/api/image?u=' + encodeURIComponent(src), { headers: headers() });
+    if (!r.ok) throw 0;
+    imgBlob = await r.blob();
+    const el = $('#thumb'); if (el) el.src = URL.createObjectURL(imgBlob);
+    document.querySelectorAll('.imgbtn').forEach((x) => (x.disabled = false));
+  } catch {}
+}
+
+async function copyImage() {
+  try {
+    const bmp = await createImageBitmap(imgBlob);
+    const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+    c.getContext('2d').drawImage(bmp, 0, 0);
+    const png = await new Promise((res) => c.toBlob(res, 'image/png'));
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    toast('Image copied');
+  } catch { toast('Couldn’t copy the image. Use Download instead.'); }
+}
+
+function downloadImage() {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(imgBlob);
+  a.download = (new URL(data.image).pathname.split('/').pop() || 'post-image.jpg');
+  a.click();
+}
+
+function xCount() {
+  const t = $('#x').value, u = data.url;
+  const n = t.split(u).join('').length + (t.includes(u) ? 23 : 0);
+  const c = $('#xc'); c.textContent = n + ' / 280'; c.classList.toggle('over', n > 280);
+}
+
+function render() {
+  const a = data.angles[cur];
+  $('#out').innerHTML = `
+  <div class="panel">
+    <div class="sec head">
+      ${data.image ? '<img id="thumb" alt="">' : ''}
+      <div>
+        <h2>${esc(data.title)}</h2>
+        <p>${esc(data.summary)}</p>
+        ${data.image ? '<div class="btns"><button class="imgbtn" id="ci" disabled>Copy image</button><button class="imgbtn" id="di" disabled>Download image</button></div>' : ''}
+      </div>
+    </div>
+    <div class="tabs" role="tablist" aria-label="Angles">
+      ${data.angles.map((x, i) => `<button role="tab" aria-selected="${i === cur}" data-i="${i}">${esc(x.angle)}</button>`).join('')}
+    </div>
+    <div class="sec">
+      <h3>X <span class="cnt" id="xc"></span></h3>
+      <textarea id="x" aria-label="X post">${esc(a.x)}</textarea>
+      <div class="btns"><button id="cx">Copy post</button><button id="ox">Open in X</button></div>
+    </div>
+    <div class="sec">
+      <h3>Facebook</h3>
+      <textarea id="fb" aria-label="Facebook post">${esc(a.facebook)}</textarea>
+      <div class="btns"><button id="cf">Copy post</button></div>
+    </div>
+    <div class="sec">
+      <h3>Instagram</h3>
+      <textarea id="ig" aria-label="Instagram caption">${esc(a.instagram)}</textarea>
+      <textarea id="tg" class="tags" aria-label="Hashtags" style="margin-top:8px">${esc(a.hashtags)}</textarea>
+      <div class="btns"><button id="cc">Copy caption</button><button id="ch">Copy hashtags</button><button id="ca">Copy both</button></div>
+    </div>
+  </div>
+  <p class="sub" style="margin-top:12px">Want different wording? Edit any box above, or press Write posts again for fresh angles.</p>`;
+
+  if (imgBlob && $('#thumb')) { $('#thumb').src = URL.createObjectURL(imgBlob); document.querySelectorAll('.imgbtn').forEach((x) => (x.disabled = false)); }
+  document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => { cur = +b.dataset.i; render(); }));
+  $('#x').oninput = xCount; xCount();
+  $('#cx').onclick = () => copy($('#x').value, 'X post');
+  $('#ox').onclick = () => window.open('https://x.com/intent/post?text=' + encodeURIComponent($('#x').value), '_blank', 'noopener');
+  $('#cf').onclick = () => copy($('#fb').value, 'Facebook post');
+  $('#cc').onclick = () => copy($('#ig').value, 'Caption');
+  $('#ch').onclick = () => copy($('#tg').value, 'Hashtags');
+  $('#ca').onclick = () => copy($('#ig').value + '\n\n' + $('#tg').value, 'Caption and hashtags');
+  if ($('#ci')) { $('#ci').onclick = copyImage; $('#di').onclick = downloadImage; }
+}
+
+$('#go').onclick = run;
+$('#url').addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+</script>
+</body>
+</html>
